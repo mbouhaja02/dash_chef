@@ -576,12 +576,12 @@ function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions:
         >
           <defs>
             <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(99, 102, 241, .3)" />
-              <stop offset="100%" stopColor="rgba(99, 102, 241, 0)" />
+              <stop offset="0%" stopColor="rgba(249, 115, 22, .28)" />
+              <stop offset="100%" stopColor="rgba(249, 115, 22, 0)" />
             </linearGradient>
             <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#6366f1" />
-              <stop offset="100%" stopColor="#8b5cf6" />
+              <stop offset="0%" stopColor="#fbbf24" />
+              <stop offset="100%" stopColor="#ea580c" />
             </linearGradient>
           </defs>
 
@@ -641,11 +641,11 @@ function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions:
           >
             <b>{hovered.label}</b>
             <div className="tt-row">
-              <span><i style={{ background: 'linear-gradient(90deg,#6366f1,#8b5cf6)' }} />Conformite</span>
+              <span><i style={{ background: 'linear-gradient(90deg,#fbbf24,#ea580c)' }} />Conformite</span>
               <strong>{pct(hovered.conformity)}</strong>
             </div>
             <div className="tt-row">
-              <span><i style={{ background: '#f59e0b' }} />Actions</span>
+              <span><i style={{ background: '#16a34a' }} />Actions</span>
               <strong>{hovered.actions}</strong>
             </div>
             <div className="tt-row">
