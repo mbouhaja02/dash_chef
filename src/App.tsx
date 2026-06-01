@@ -306,7 +306,6 @@ export default function App() {
   const [backTh, setBackTh] = useState(initial.backTh);
   const [panel, setPanel] = useState<null | 'settings' | 'share'>(null);
   const [copied, setCopied] = useState(false);
-  const [demo, setDemo] = useState(false);
   const [boost, setBoost] = useState(5);
   const [showSplash, setShowSplash] = useState(true);
   const [splashProgress, setSplashProgress] = useState(8);
@@ -341,17 +340,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [panel]);
 
-  function toggleDemo() {
-    setPanel(null);
-    setDemo((d) => !d);
-    toggleFullscreen();
-  }
-
   const scopedRows = useMemo(() => scopeByRange(rows, range), [rows, range]);
   const summary = useMemo(() => summarize(scopedRows), [scopedRows]);
   const actions = useMemo(() => buildActions(scopedRows), [scopedRows]);
   const categories = useMemo(() => buildCategories(scopedRows), [scopedRows]);
   const timeline = useMemo(() => buildTimeline(scopedRows, range === '7d' ? 7 : 14), [scopedRows, range]);
+  const latestAudits = useMemo(
+    () => [...scopedRows]
+      .sort((a, b) => new Date(b.audit_date).getTime() - new Date(a.audit_date).getTime())
+      .slice(0, 5),
+    [scopedRows],
+  );
   const filteredActions = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return actions;
@@ -416,6 +415,9 @@ export default function App() {
   const highActions = actions.filter((action) => action.priority === 'Haute').length;
   const mediumActions = actions.filter((action) => action.priority === 'Moyenne').length;
   const analysedToday = actions.filter((action) => isToday(action.lastAudit)).length;
+  const openActions = highActions + mediumActions;
+  const actionsToday = actions.filter((action) => action.priority !== 'Faible' && isToday(action.lastAudit)).length || openActions;
+  const lastAuditLabel = latestAudits[0] ? formatDate(latestAudits[0].audit_date) : 'N/A';
   const maxActions = Math.max(1, ...timeline.map((point) => point.actions));
   const latestTimeline = timeline[timeline.length - 1];
   const terrainReady = summary.avgProfitability >= 85 && highActions === 0;
@@ -429,9 +431,9 @@ export default function App() {
   return (
     <>
       {showSplash ? (
-        <Splash brand="ShelfGuide" sub={dashboardConfig.demoLocation} progress={splashProgress} onSkip={() => setShowSplash(false)} />
+        <Splash brand="ShelfGuide" sub={dashboardConfig.networkLabel} progress={splashProgress} onSkip={() => setShowSplash(false)} />
       ) : null}
-      <main className={`app-frame${demo ? ' demo' : ''}`}>
+      <main className="app-frame">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">CR</div>
@@ -445,6 +447,7 @@ export default function App() {
           <a className="active" href="#overview">Tour terrain</a>
           <a href="#actions">Actions</a>
           <a href="#categories">Categories</a>
+          <a href="#audits">Audits</a>
           <a href="#timeline">Evolution</a>
         </nav>
 
@@ -458,18 +461,15 @@ export default function App() {
       <section className="workspace">
         <header className="page-header" id="overview">
           <div>
-            <p className="eyebrow">Chef de rayon</p>
-            <h1>Plan d'action terrain</h1>
-            <p className="subtitle">Ruptures visibles, produits mal orientes et rayons a remettre en propre.</p>
+            <p className="eyebrow">ShelfGuide terrain</p>
+            <h1>Dashboard Chef de Rayon</h1>
+            <p className="subtitle">Priorisez les corrections, suivez le remplissage et validez les actions terrain.</p>
           </div>
           <div className="header-actions">
             <div className="store-chip">
               <span>Perimetre</span>
               <strong>{dashboardConfig.storeName || 'Tous magasins'}{dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}</strong>
             </div>
-            <button className="demo-btn" onClick={toggleDemo} aria-pressed={demo} title="Mode presentation plein ecran">
-              {demo ? '✕ Quitter la demo' : '▶ Lancer la demo'}
-            </button>
             <div className="seg" role="group" aria-label="Periode d'analyse">
               {(['7d', '30d', 'all'] as Range[]).map((r) => (
                 <button key={r} className={range === r ? 'active' : ''} onClick={() => setRange(r)}>{RANGE_LABELS[r]}</button>
@@ -568,25 +568,19 @@ export default function App() {
             </section>
 
             <section className="metric-grid">
-              <MetricCard label="Analyses" value={String(summary.audits)} detail="Audits rayon" />
+              <MetricCard label="Score de remplissage du rayon" value={pct(summary.avgProfitability)} detail="Score moyen" tone="success" />
               <MetricCard
-                label="Haute priorite"
-                value={String(highActions)}
+                label="Anomalies ouvertes"
+                value={String(openActions)}
                 detail={highActions > 0 ? 'A traiter maintenant' : 'Rayons propres'}
                 tone={highActions > 0 ? 'danger' : 'success'}
                 pulse={highActions > 0}
               />
-              <MetricCard label="Moyenne" value={String(mediumActions)} detail="A corriger ensuite" tone="warning" />
-              <MetricCard label="Profitabilite" value={pct(summary.avgProfitability)} detail="Score moyen" tone="success" />
-              <MetricCard
-                label="Facings vides"
-                value={String(summary.emptySpaces)}
-                detail={`${pct(summary.avgEmptyRatio)} moyen`}
-                tone="warning"
-                sub={`≈ ${formatMAD(ruptureCostDaily)} CA/jour`}
-              />
-              <MetricCard label="Back-side" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} moyen`} />
-              <MetricCard label="Aujourd'hui" value={String(analysedToday)} detail="Analyses du jour" tone="success" />
+              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" />
+              <MetricCard label="Actions a faire aujourd'hui" value={String(actionsToday)} detail={`${mediumActions} priorite moyenne`} tone={actionsToday > 0 ? 'warning' : 'success'} />
+              <MetricCard label="Dernier audit realise" value={lastAuditLabel} detail={`${analysedToday} analyses aujourd'hui`} />
+              <MetricCard label="Progression apres correction" value={String(latestTimeline?.corrected ?? 0)} detail="Anomalies corrigees" tone="success" />
+              <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} />
             </section>
 
             <BusinessBand
@@ -595,13 +589,13 @@ export default function App() {
               hoursSaved={hoursSaved}
               boost={boost}
               onBoost={setBoost}
-              location={dashboardConfig.demoLocation}
+              location={dashboardConfig.networkLabel}
             />
 
             <section className="content-grid">
               <section className="panel table-panel" id="actions">
                 <div className="panel-head">
-                  <PanelTitle eyebrow="Execution terrain" title="File d'actions rayon" />
+                  <PanelTitle eyebrow="Mes priorites aujourd'hui" title="Taches terrain a traiter" />
                   <input
                     className="search"
                     type="search"
@@ -615,7 +609,7 @@ export default function App() {
               </section>
 
               <section className="panel decisions-panel">
-                <PanelTitle eyebrow="Checklist" title="Ordre de passage" />
+                <PanelTitle eyebrow="Analyse rayon" title="Etat et tendance" />
                 <DecisionStack
                   items={[
                     ['Commencer par', immediate?.shelf ?? 'Aucun rayon'],
@@ -629,6 +623,16 @@ export default function App() {
               <section className="panel alerts-panel" id="categories">
                 <PanelTitle eyebrow="Categories" title="Zones sensibles" />
                 <CategoryList categories={categories} />
+              </section>
+
+              <section className="panel recommendations-panel">
+                <PanelTitle eyebrow="Recommandations terrain" title="Actions concretes" />
+                <TerrainRecommendationList immediate={immediate} openActions={openActions} />
+              </section>
+
+              <section className="panel audits-panel" id="audits">
+                <PanelTitle eyebrow="Derniers audits du rayon" title="Analyses recentes" />
+                <AuditCardList rows={latestAudits} />
               </section>
 
               <section className="panel timeline-panel" id="timeline">
@@ -840,6 +844,8 @@ function DecisionStack({ items }: { items: [string, string][] }) {
 }
 
 function CategoryList({ categories }: { categories: CategoryFocus[] }) {
+  if (categories.length === 0) return <p className="muted">Aucune categorie sensible detectee.</p>;
+
   return (
     <div className="recurring-list">
       {categories.map((category, index) => (
@@ -852,6 +858,51 @@ function CategoryList({ categories }: { categories: CategoryFocus[] }) {
           <em>{category.actions} actions</em>
         </div>
       ))}
+    </div>
+  );
+}
+
+function TerrainRecommendationList({ immediate, openActions }: { immediate?: ActionRow; openActions: number }) {
+  const items = [
+    immediate ? `${immediate.action} sur ${immediate.shelf}.` : 'Maintenir un controle rapide du rayon.',
+    'Verifier le stock reserve avant de modifier le facing.',
+    'Corriger les produits mal orientes en front de rayon.',
+    openActions > 0 ? 'Relancer un audit apres correction pour valider le rayon.' : 'Planifier le prochain audit de routine.',
+  ];
+
+  return (
+    <div className="recommendation-list">
+      {items.map((item, index) => (
+        <div key={item} className="recommendation-item">
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          <p>{item}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AuditCardList({ rows }: { rows: AnalysisRow[] }) {
+  if (rows.length === 0) return <p className="muted">Aucune analyse recente disponible.</p>;
+
+  return (
+    <div className="audit-card-grid">
+      {rows.map((row) => {
+        const status = statusOf(row);
+        return (
+          <article className="audit-card" key={row.id}>
+            <div className="audit-thumb" aria-hidden="true">SG</div>
+            <div>
+              <strong>{row.shelf_name}</strong>
+              <small>{formatDate(row.audit_date)} - {row.category}</small>
+            </div>
+            <div className="audit-card-footer">
+              <span>{pct(row.weighted_profitability_percent)}</span>
+              <StatusBadge tone={toneFromStatus(status)} label={status} />
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -903,12 +954,12 @@ function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions:
         >
           <defs>
             <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(249, 115, 22, .28)" />
-              <stop offset="100%" stopColor="rgba(249, 115, 22, 0)" />
+              <stop offset="0%" stopColor="rgba(17, 191, 210, .18)" />
+              <stop offset="100%" stopColor="rgba(17, 191, 210, 0)" />
             </linearGradient>
             <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#fbbf24" />
-              <stop offset="100%" stopColor="#ea580c" />
+              <stop offset="0%" stopColor="#11bfd2" />
+              <stop offset="100%" stopColor="#078da0" />
             </linearGradient>
           </defs>
 
@@ -970,11 +1021,11 @@ function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions:
           >
             <b>{hovered.label}</b>
             <div className="tt-row">
-              <span><i style={{ background: 'linear-gradient(90deg,#fbbf24,#ea580c)' }} />Conformite</span>
+              <span><i style={{ background: '#11bfd2' }} />Conformite</span>
               <strong>{pct(hovered.conformity)}</strong>
             </div>
             <div className="tt-row">
-              <span><i style={{ background: '#16a34a' }} />Actions</span>
+              <span><i style={{ background: '#159b68' }} />Actions</span>
               <strong>{hovered.actions}</strong>
             </div>
             <div className="tt-row">
