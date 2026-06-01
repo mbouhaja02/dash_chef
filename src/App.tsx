@@ -1,35 +1,204 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   AnalysisRow,
-  DashboardGroup,
+  average,
   formatDate,
-  groupRows,
   isSupabaseConfigured,
   loadAnalyses,
   summarize,
-  worstRows,
+  supabaseClient,
 } from './dashboard';
 import { dashboardConfig } from './config';
 import './styles.css';
+
+type Tone = 'danger' | 'warning' | 'success' | 'primary';
+type Priority = 'Haute' | 'Moyenne' | 'Faible';
+
+interface ActionRow {
+  id: string;
+  store: string;
+  shelf: string;
+  category: string;
+  status: string;
+  priority: Priority;
+  action: string;
+  emptyRatio: number;
+  backRatio: number;
+  profitability: number;
+  emptySpaces: number;
+  backProducts: number;
+  lastAudit: string;
+  score: number;
+}
+
+interface CategoryFocus {
+  category: string;
+  actions: number;
+  avgProfitability: number;
+  emptySpaces: number;
+  backProducts: number;
+}
+
+interface TimelinePoint {
+  label: string;
+  conformity: number;
+  actions: number;
+  corrected: number;
+}
 
 function pct(value: number): string {
   return `${Math.round(value)}%`;
 }
 
-function tone(row: AnalysisRow): string {
-  if (row.status === 'Critique' || row.weighted_profitability_percent < 65) return 'danger';
-  if (row.status === 'Moyen' || row.weighted_profitability_percent < 85) return 'warning';
+function clamp(value: number, min = 0, max = 100): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function dayKey(value: string): string {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function shortDay(value: string): string {
+  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short' }).format(new Date(value));
+}
+
+function isToday(value: string): boolean {
+  return dayKey(value) === dayKey(new Date().toISOString());
+}
+
+function statusOf(row: AnalysisRow): string {
+  if (row.status === 'Critique' || row.severity === 'high' || row.weighted_profitability_percent < 65) return 'Critique';
+  if (row.status === 'Moyen' || row.weighted_profitability_percent < 85) return 'Moyen';
+  return 'Bon';
+}
+
+function toneFromStatus(status: string): Tone {
+  if (status === 'Critique') return 'danger';
+  if (status === 'Moyen') return 'warning';
   return 'success';
+}
+
+function toneFromPriority(priority: Priority): Tone {
+  if (priority === 'Haute') return 'danger';
+  if (priority === 'Moyenne') return 'warning';
+  return 'success';
+}
+
+function actionFor(row: AnalysisRow): string {
+  if (row.empty_ratio_percent >= 10 || row.empty_spaces >= 3) return 'Recharger le facing';
+  if (row.back_ratio_percent >= 7 || row.back_products >= 3) return 'Remettre produits en front';
+  if (row.weighted_profitability_percent < 75) return 'Verifier implantation';
+  return 'Controle rapide';
+}
+
+function priorityFor(row: AnalysisRow): Priority {
+  if (
+    statusOf(row) === 'Critique' ||
+    row.empty_ratio_percent >= 15 ||
+    row.back_ratio_percent >= 10 ||
+    row.weighted_profitability_percent < 70
+  ) return 'Haute';
+
+  if (
+    statusOf(row) === 'Moyen' ||
+    row.empty_ratio_percent >= 7 ||
+    row.back_ratio_percent >= 5 ||
+    row.weighted_profitability_percent < 85
+  ) return 'Moyenne';
+
+  return 'Faible';
+}
+
+function issueCount(rows: AnalysisRow[]): number {
+  return rows.reduce((sum, row) => sum + row.empty_spaces + row.back_products, 0);
+}
+
+function buildActions(rows: AnalysisRow[]): ActionRow[] {
+  return [...rows]
+    .sort((a, b) => new Date(b.audit_date).getTime() - new Date(a.audit_date).getTime())
+    .map((row) => {
+      const priority = priorityFor(row);
+      const score =
+        (100 - row.weighted_profitability_percent) +
+        row.empty_ratio_percent * 1.7 +
+        row.back_ratio_percent * 1.3 +
+        row.empty_spaces * 3 +
+        row.back_products * 2;
+
+      return {
+        id: row.id,
+        store: row.store_name,
+        shelf: row.shelf_name,
+        category: row.category,
+        status: statusOf(row),
+        priority,
+        action: actionFor(row),
+        emptyRatio: row.empty_ratio_percent,
+        backRatio: row.back_ratio_percent,
+        profitability: row.weighted_profitability_percent,
+        emptySpaces: row.empty_spaces,
+        backProducts: row.back_products,
+        lastAudit: row.audit_date,
+        score,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function buildCategories(rows: AnalysisRow[]): CategoryFocus[] {
+  const buckets = new Map<string, AnalysisRow[]>();
+
+  for (const row of rows) {
+    buckets.set(row.category, [...(buckets.get(row.category) ?? []), row]);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([category, items]) => ({
+      category,
+      actions: items.filter((item) => priorityFor(item) !== 'Faible').length,
+      avgProfitability: average(items.map((item) => item.weighted_profitability_percent)),
+      emptySpaces: items.reduce((sum, item) => sum + item.empty_spaces, 0),
+      backProducts: items.reduce((sum, item) => sum + item.back_products, 0),
+    }))
+    .sort((a, b) => b.actions - a.actions || a.avgProfitability - b.avgProfitability)
+    .slice(0, 5);
+}
+
+function buildTimeline(rows: AnalysisRow[]): TimelinePoint[] {
+  const buckets = new Map<string, AnalysisRow[]>();
+
+  for (const row of rows) {
+    const key = dayKey(row.audit_date);
+    buckets.set(key, [...(buckets.get(key) ?? []), row]);
+  }
+
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-7)
+    .map(([key, items], index, all) => {
+      const actions = issueCount(items);
+      const previous = index > 0 ? issueCount(all[index - 1][1]) : actions;
+
+      return {
+        label: shortDay(key),
+        conformity: average(items.map((item) => item.weighted_profitability_percent)),
+        actions,
+        corrected: Math.max(0, previous - actions),
+      };
+    });
 }
 
 export default function App() {
   const [rows, setRows] = useState<AnalysisRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  async function refresh() {
+  async function refresh(showLoading = false) {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
+      else setRefreshing(true);
       setError(null);
       const data = await loadAnalyses({
         storeName: dashboardConfig.storeName,
@@ -37,160 +206,316 @@ export default function App() {
         limit: dashboardConfig.limit,
       });
       setRows(data);
-    } catch (err: any) {
-      setError(err?.message ?? 'Erreur de chargement Supabase.');
+      setLastUpdated(new Date());
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erreur de chargement Supabase.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
   useEffect(() => {
-    if (isSupabaseConfigured) void refresh();
-    else {
+    if (!isSupabaseConfigured) {
       setLoading(false);
       setError('Variables Supabase manquantes.');
+      return;
     }
+
+    void refresh(true);
+
+    const intervalId = window.setInterval(() => {
+      void refresh();
+    }, dashboardConfig.refreshMs);
+
+    const channel = supabaseClient
+      ?.channel('shelfguide-chef-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'shelfguide_analyses' },
+        () => void refresh(),
+      )
+      .subscribe();
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (channel) void supabaseClient?.removeChannel(channel);
+    };
   }, []);
 
   const summary = useMemo(() => summarize(rows), [rows]);
-  const primaryGroups = useMemo(() => groupRows(rows, dashboardConfig.primaryGroup).slice(0, 7), [rows]);
-  const secondaryGroups = useMemo(() => groupRows(rows, dashboardConfig.secondaryGroup).slice(0, 6), [rows]);
-  const riskRows = useMemo(() => worstRows(rows, 8), [rows]);
-  const recentRows = useMemo(() => rows.slice(0, 8), [rows]);
+  const actions = useMemo(() => buildActions(rows), [rows]);
+  const categories = useMemo(() => buildCategories(rows), [rows]);
+  const timeline = useMemo(() => buildTimeline(rows), [rows]);
+  const immediate = actions[0];
+  const highActions = actions.filter((action) => action.priority === 'Haute').length;
+  const mediumActions = actions.filter((action) => action.priority === 'Moyenne').length;
+  const analysedToday = actions.filter((action) => isToday(action.lastAudit)).length;
+  const maxActions = Math.max(1, ...timeline.map((point) => point.actions));
+  const latestTimeline = timeline[timeline.length - 1];
+  const terrainReady = summary.avgProfitability >= 85 && highActions === 0;
 
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">{dashboardConfig.eyebrow}</p>
-          <h1>{dashboardConfig.title}</h1>
-          <p className="subtitle">{dashboardConfig.subtitle}</p>
+    <main className="app-frame">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">CR</div>
+          <div>
+            <strong>ShelfGuide Terrain</strong>
+            <span>Chef de rayon</span>
+          </div>
         </div>
-        <button className="refresh" onClick={refresh} disabled={loading || !isSupabaseConfigured}>
-          Actualiser
-        </button>
-      </header>
 
-      <section className="scope">
-        <div>
-          <span>{dashboardConfig.scopeLabel}</span>
-          <strong>{dashboardConfig.storeName || 'Tous magasins'}{dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}</strong>
+        <nav className="side-nav" aria-label="Navigation dashboard">
+          <a className="active" href="#overview">Tour terrain</a>
+          <a href="#actions">Actions</a>
+          <a href="#categories">Categories</a>
+          <a href="#timeline">Evolution</a>
+        </nav>
+
+        <div className={`sync-card ${error ? 'offline' : 'online'}`}>
+          <span className="sync-dot" />
+          <strong>{error ? 'Connexion a verifier' : refreshing ? 'Synchronisation' : 'Supabase live'}</strong>
+          <small>{lastUpdated ? formatDate(lastUpdated.toISOString()) : 'En attente'}</small>
         </div>
-        <div>
-          <span>Source</span>
-          <strong>Supabase / shelfguide_analyses</strong>
-        </div>
+      </aside>
+
+      <section className="workspace">
+        <header className="page-header" id="overview">
+          <div>
+            <p className="eyebrow">Chef de rayon</p>
+            <h1>Plan d'action terrain</h1>
+            <p className="subtitle">Ruptures visibles, produits mal orientes et rayons a remettre en propre.</p>
+          </div>
+          <div className="header-actions">
+            <div className="store-chip">
+              <span>Perimetre</span>
+              <strong>{dashboardConfig.storeName || 'Tous magasins'}{dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}</strong>
+            </div>
+            <button className="refresh" onClick={() => void refresh()} disabled={loading || !isSupabaseConfigured}>
+              Actualiser
+            </button>
+          </div>
+        </header>
+
+        {error ? <div className="notice danger">{error}</div> : null}
+        {loading ? <div className="notice">Chargement des analyses Supabase...</div> : null}
+
+        {!loading && rows.length === 0 && !error ? (
+          <div className="empty">Aucune analyse disponible pour ce perimetre.</div>
+        ) : null}
+
+        {rows.length > 0 ? (
+          <>
+            <section className="command-grid">
+              <article className="command-card score-card">
+                <div className="section-heading">
+                  <span>Score terrain</span>
+                  <StatusBadge tone={terrainReady ? 'success' : 'warning'} label={terrainReady ? 'Rayons propres' : 'Tour requis'} />
+                </div>
+                <div className="score-layout">
+                  <div>
+                    <strong className="score-value">{pct(summary.avgProfitability)}</strong>
+                    <p>{highActions} actions hautes et {mediumActions} actions moyennes a traiter.</p>
+                  </div>
+                  <div className="score-ring" style={{ '--score': `${clamp(summary.avgProfitability)}%` } as CSSProperties}>
+                    <span>{pct(summary.avgProfitability)}</span>
+                  </div>
+                </div>
+              </article>
+
+              <article className="command-card priority-card">
+                <div className="section-heading">
+                  <span>Action immediate</span>
+                  <StatusBadge tone={immediate ? toneFromPriority(immediate.priority) : 'primary'} label={immediate?.priority ?? 'N/A'} />
+                </div>
+                <strong className="priority-title">{immediate?.shelf ?? 'Aucun rayon'}</strong>
+                <p>{immediate ? `${immediate.action}: ${pct(immediate.emptyRatio)} vide, ${pct(immediate.backRatio)} back-side.` : 'Aucune action detectee.'}</p>
+                <div className="mini-metrics">
+                  <span>Consigne terrain</span>
+                  <strong>{immediate?.action ?? 'Maintenir controle rayon'}</strong>
+                </div>
+              </article>
+
+              <article className="command-card execution-card">
+                <div className="section-heading">
+                  <span>Tour du jour</span>
+                  <StatusBadge tone={analysedToday > 0 ? 'success' : 'warning'} label={`${analysedToday} analyses`} />
+                </div>
+                <strong className="priority-title">{latestTimeline?.corrected ?? 0} anomalies corrigees</strong>
+                <p>Dernier passage synchronise avec Supabase en temps reel.</p>
+                <div className="progress-line">
+                  <i style={{ width: `${clamp((analysedToday / Math.max(1, actions.length)) * 100)}%` }} />
+                </div>
+              </article>
+            </section>
+
+            <section className="metric-grid">
+              <MetricCard label="Analyses" value={String(summary.audits)} detail="Audits rayon" />
+              <MetricCard label="Haute priorite" value={String(highActions)} detail="A traiter maintenant" tone="danger" />
+              <MetricCard label="Moyenne" value={String(mediumActions)} detail="A corriger ensuite" tone="warning" />
+              <MetricCard label="Profitabilite" value={pct(summary.avgProfitability)} detail="Score moyen" tone="success" />
+              <MetricCard label="Facings vides" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" />
+              <MetricCard label="Back-side" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} moyen`} />
+              <MetricCard label="Aujourd'hui" value={String(analysedToday)} detail="Analyses du jour" tone="success" />
+            </section>
+
+            <section className="content-grid">
+              <section className="panel table-panel" id="actions">
+                <PanelTitle eyebrow="Execution terrain" title="File d'actions rayon" />
+                <ActionTable actions={actions.slice(0, 12)} />
+              </section>
+
+              <section className="panel decisions-panel">
+                <PanelTitle eyebrow="Checklist" title="Ordre de passage" />
+                <DecisionStack
+                  items={[
+                    ['Commencer par', immediate?.shelf ?? 'Aucun rayon'],
+                    ['Action', immediate?.action ?? 'Controle rapide'],
+                    ['Ruptures visibles', String(summary.emptySpaces)],
+                    ['Mal orientes', String(summary.backProducts)],
+                  ]}
+                />
+              </section>
+
+              <section className="panel alerts-panel" id="categories">
+                <PanelTitle eyebrow="Categories" title="Zones sensibles" />
+                <CategoryList categories={categories} />
+              </section>
+
+              <section className="panel timeline-panel" id="timeline">
+                <PanelTitle eyebrow="Evolution" title="Conformite et corrections terrain" />
+                <Timeline points={timeline} maxActions={maxActions} />
+              </section>
+            </section>
+          </>
+        ) : null}
       </section>
-
-      {error ? <div className="notice">{error}</div> : null}
-      {loading ? <div className="notice">Chargement des resultats...</div> : null}
-
-      {!loading && rows.length === 0 && !error ? (
-        <div className="empty">Aucune analyse disponible pour ce perimetre.</div>
-      ) : null}
-
-      {rows.length > 0 ? (
-        <>
-          <section className="kpis">
-            <Kpi label="Audits" value={String(summary.audits)} />
-            <Kpi label="Profitabilite moyenne" value={pct(summary.avgProfitability)} tone="success" />
-            <Kpi label="Alertes critiques" value={String(summary.critical)} tone="danger" />
-            <Kpi label="Zones vides" value={String(summary.emptySpaces)} tone="warning" />
-            <Kpi label="Back/side" value={String(summary.backProducts)} />
-            <Kpi label="Ratio vide moyen" value={pct(summary.avgEmptyRatio)} />
-          </section>
-
-          <section className="grid">
-            <Panel title={dashboardConfig.riskTitle}>
-              <AuditTable rows={riskRows} />
-            </Panel>
-            <Panel title={dashboardConfig.primaryTitle}>
-              <GroupList groups={primaryGroups} />
-            </Panel>
-            <Panel title={dashboardConfig.secondaryTitle}>
-              <GroupList groups={secondaryGroups} />
-            </Panel>
-            <Panel title={dashboardConfig.recentTitle}>
-              <AuditTable rows={recentRows} compact />
-            </Panel>
-          </section>
-        </>
-      ) : null}
     </main>
   );
 }
 
-function Kpi({ label, value, tone: toneName = 'primary' }: { label: string; value: string; tone?: string }) {
+function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
+  return <span className={`status-badge ${tone}`}>{label}</span>;
+}
+
+function MetricCard({ label, value, detail, tone = 'primary' }: { label: string; value: string; detail: string; tone?: Tone }) {
   return (
-    <article className={`kpi ${toneName}`}>
+    <article className={`metric-card ${tone}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+      <small>{detail}</small>
     </article>
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function PanelTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
-    <section className="panel">
+    <div className="panel-title">
+      <span>{eyebrow}</span>
       <h2>{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function GroupList({ groups }: { groups: DashboardGroup[] }) {
-  const max = Math.max(...groups.map((group) => group.avgProfitability), 100);
-
-  return (
-    <div className="groups">
-      {groups.map((group) => (
-        <div className="group-row" key={group.label}>
-          <div className="group-head">
-            <strong>{group.label}</strong>
-            <span>{pct(group.avgProfitability)}</span>
-          </div>
-          <div className="bar">
-            <span style={{ width: `${Math.max(4, (group.avgProfitability / max) * 100)}%` }} />
-          </div>
-          <small>
-            {group.count} audits · {group.emptySpaces} vides · {group.backProducts} back/side
-          </small>
-        </div>
-      ))}
     </div>
   );
 }
 
-function AuditTable({ rows, compact = false }: { rows: AnalysisRow[]; compact?: boolean }) {
+function RatioCell({ value, tone }: { value: number; tone: Tone }) {
+  return (
+    <div className="ratio-cell">
+      <span>{pct(value)}</span>
+      <div className={`ratio-track ${tone}`}>
+        <i style={{ width: `${clamp(value)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ActionTable({ actions }: { actions: ActionRow[] }) {
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
             <th>Rayon</th>
-            {!compact ? <th>Magasin</th> : null}
-            <th>Score</th>
-            <th>Vides</th>
-            <th>Back</th>
-            <th>Date</th>
+            <th>Statut</th>
+            <th>Vide</th>
+            <th>Back-side</th>
+            <th>Profitabilite</th>
+            <th>Action</th>
+            <th>Priorite</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
+          {actions.map((action) => (
+            <tr key={action.id}>
               <td>
-                <strong>{row.shelf_name}</strong>
-                <small>{row.category}</small>
+                <strong>{action.shelf}</strong>
+                <small>{action.category} - {action.store}</small>
               </td>
-              {!compact ? <td>{row.store_name}</td> : null}
-              <td><span className={`pill ${tone(row)}`}>{pct(row.weighted_profitability_percent)}</span></td>
-              <td>{row.empty_spaces}</td>
-              <td>{row.back_products}</td>
-              <td>{formatDate(row.audit_date)}</td>
+              <td><StatusBadge tone={toneFromStatus(action.status)} label={action.status} /></td>
+              <td><RatioCell value={action.emptyRatio} tone={action.emptyRatio >= 10 ? 'danger' : action.emptyRatio >= 7 ? 'warning' : 'success'} /></td>
+              <td><RatioCell value={action.backRatio} tone={action.backRatio >= 7 ? 'warning' : 'success'} /></td>
+              <td><RatioCell value={action.profitability} tone={action.profitability >= 85 ? 'success' : action.profitability >= 65 ? 'warning' : 'danger'} /></td>
+              <td>{action.action}</td>
+              <td><StatusBadge tone={toneFromPriority(action.priority)} label={action.priority} /></td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function DecisionStack({ items }: { items: [string, string][] }) {
+  return (
+    <div className="decision-stack">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CategoryList({ categories }: { categories: CategoryFocus[] }) {
+  return (
+    <div className="recurring-list">
+      {categories.map((category, index) => (
+        <div key={category.category}>
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          <div>
+            <strong>{category.category}</strong>
+            <small>{category.emptySpaces} vides - {category.backProducts} back-side</small>
+          </div>
+          <em>{category.actions} actions</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions: number }) {
+  if (points.length === 0) return <p className="muted">Pas encore assez de donnees temporelles.</p>;
+
+  return (
+    <div className="timeline">
+      <div className="timeline-legend">
+        <span><i className="legend-compliance" /> Conformite</span>
+        <span><i className="legend-anomaly" /> Actions</span>
+      </div>
+      <div className="timeline-bars">
+        {points.map((point) => (
+          <div className="timeline-day" key={point.label}>
+            <div className="bar-stage">
+              <span style={{ height: `${clamp(point.conformity, 8, 100)}%` }} />
+              <i style={{ height: `${clamp((point.actions / maxActions) * 100, 8, 100)}%` }} />
+            </div>
+            <strong>{point.label}</strong>
+            <small>{pct(point.conformity)} - {point.corrected} corr.</small>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

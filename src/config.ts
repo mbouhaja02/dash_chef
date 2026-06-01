@@ -14,4 +14,5 @@ export const dashboardConfig = {
   riskTitle: 'Actions prioritaires',
   recentTitle: 'Dernieres analyses',
   limit: 300,
+  refreshMs: 15000,
 };
