@@ -10,6 +10,7 @@ import {
   supabaseClient,
 } from './dashboard';
 import { dashboardConfig } from './config';
+import { generateChefReport } from './report';
 import './styles.css';
 
 type Tone = 'danger' | 'warning' | 'success' | 'primary';
@@ -343,6 +344,32 @@ export default function App() {
   function copySnapshot() {
     void navigator.clipboard?.writeText(snapshotUrl).then(() => setCopied(true));
   }
+
+  function exportPdf() {
+    generateChefReport({
+      perimetre: `${dashboardConfig.storeName || 'Tous magasins'}${dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}`,
+      periode: RANGE_LABELS[range],
+      summary: {
+        avgProfitability: summary.avgProfitability,
+        avgEmptyRatio: summary.avgEmptyRatio,
+        avgBackRatio: summary.avgBackRatio,
+        audits: summary.audits,
+        emptySpaces: summary.emptySpaces,
+        backProducts: summary.backProducts,
+      },
+      counts: { actions: actions.length, high: highActions, medium: mediumActions },
+      immediate: immediate
+        ? { shelf: immediate.shelf, action: immediate.action, emptyRatio: immediate.emptyRatio, backRatio: immediate.backRatio }
+        : undefined,
+      actions: actions.slice(0, 12).map((a) => ({
+        shelf: a.shelf, category: a.category, status: a.status, action: a.action,
+        emptyRatio: a.emptyRatio, backRatio: a.backRatio, priority: a.priority,
+      })),
+      categories: categories.map((c) => ({ category: c.category, actions: c.actions })),
+      timeline: timeline.map((t) => ({ label: t.label, conformity: t.conformity })),
+      thresholds: { empty: emptyTh, back: backTh },
+    });
+  }
   const immediate = actions[0];
   const highActions = actions.filter((action) => action.priority === 'Haute').length;
   const mediumActions = actions.filter((action) => action.priority === 'Moyenne').length;
@@ -396,7 +423,7 @@ export default function App() {
             <div className="tool-group">
               <button className="tool-btn" onClick={() => setPanel(panel === 'settings' ? null : 'settings')} title="Reglages des seuils d'alerte">⚙</button>
               <button className="tool-btn" onClick={exportCsv} disabled={rows.length === 0} title="Exporter les actions en CSV">CSV</button>
-              <button className="tool-btn" onClick={() => window.print()} disabled={rows.length === 0} title="Generer un rapport PDF">PDF</button>
+              <button className="tool-btn" onClick={exportPdf} disabled={rows.length === 0} title="Generer un rapport PDF professionnel">PDF</button>
               <button className="tool-btn" onClick={toggleFullscreen} title="Mode presentation plein ecran">⛶</button>
               <button className="tool-btn" onClick={() => setPanel(panel === 'share' ? null : 'share')} title="Partager / QR code">⤴</button>
             </div>
