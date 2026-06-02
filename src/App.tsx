@@ -17,6 +17,7 @@ import './styles.css';
 
 type Tone = 'danger' | 'warning' | 'success' | 'primary';
 type Priority = 'Haute' | 'Moyenne' | 'Faible';
+type Theme = 'light' | 'dark';
 
 interface ActionRow {
   id: string;
@@ -48,6 +49,13 @@ interface TimelinePoint {
   conformity: number;
   actions: number;
   corrected: number;
+}
+
+interface ActivityItem {
+  avatar: string;
+  title: string;
+  meta: string;
+  tone: Tone;
 }
 
 function pct(value: number): string {
@@ -218,6 +226,14 @@ const RANGE_LABELS: Record<Range, string> = { '7d': '7 jours', '30d': '30 jours'
 const DEFAULT_EMPTY = 10;
 const DEFAULT_BACK = 7;
 
+function readTheme(): Theme {
+  try {
+    return window.localStorage.getItem('shelfguide-theme') === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+}
+
 function scopeByRange(rows: AnalysisRow[], range: Range): AnalysisRow[] {
   if (range === 'all') return rows;
   const cutoff = Date.now() - RANGE_DAYS[range] * 86400000;
@@ -309,6 +325,8 @@ export default function App() {
   const [boost, setBoost] = useState(5);
   const [showSplash, setShowSplash] = useState(true);
   const [splashProgress, setSplashProgress] = useState(8);
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  const quickSearchRef = useRef<HTMLInputElement>(null);
 
   // Splash : barre de progression au premier chargement uniquement
   useEffect(() => {
@@ -339,6 +357,26 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [panel]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem('shelfguide-theme', theme);
+    } catch {
+      // Storage can be unavailable in restricted embeds.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        quickSearchRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const scopedRows = useMemo(() => scopeByRange(rows, range), [rows, range]);
   const summary = useMemo(() => summarize(scopedRows), [scopedRows]);
@@ -421,6 +459,41 @@ export default function App() {
   const maxActions = Math.max(1, ...timeline.map((point) => point.actions));
   const latestTimeline = timeline[timeline.length - 1];
   const terrainReady = summary.avgProfitability >= 85 && highActions === 0;
+  const alertCount = highActions || openActions;
+  const activityItems: ActivityItem[] = [
+    immediate
+      ? {
+          avatar: 'CR',
+          title: `${immediate.shelf}: ${immediate.action}`,
+          meta: `${immediate.store} - ${formatDate(immediate.lastAudit)}`,
+          tone: toneFromPriority(immediate.priority),
+        }
+      : {
+          avatar: 'OK',
+          title: 'Aucune urgence terrain detectee',
+          meta: 'Maintenir le tour de controle',
+          tone: 'success',
+        },
+    latestAudits[0]
+      ? {
+          avatar: 'AI',
+          title: `${latestAudits[0].shelf_name} audite automatiquement`,
+          meta: `${latestAudits[0].category} - ${formatDate(latestAudits[0].audit_date)}`,
+          tone: toneFromStatus(latestAudits[0].status),
+        }
+      : {
+          avatar: 'AI',
+          title: 'En attente du prochain audit',
+          meta: 'Supabase live actif',
+          tone: 'primary',
+        },
+    {
+      avatar: 'HQ',
+      title: `${openActions} actions terrain ouvertes`,
+      meta: `${analysedToday} analyses traitees aujourd'hui`,
+      tone: openActions > 0 ? 'warning' : 'success',
+    },
+  ];
 
   // Valorisation business (hypotheses ajustables dans config.ts)
   const ruptureCostDaily = summary.emptySpaces * dashboardConfig.costPerFacing;
@@ -470,17 +543,35 @@ export default function App() {
               <span>Perimetre</span>
               <strong>{dashboardConfig.storeName || 'Tous magasins'}{dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}</strong>
             </div>
+            <label className="quick-search" aria-label="Recherche rapide">
+              <span>Search</span>
+              <input
+                ref={quickSearchRef}
+                type="search"
+                placeholder="Rayon, action..."
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <kbd>Ctrl K</kbd>
+            </label>
             <div className="seg" role="group" aria-label="Periode d'analyse">
               {(['7d', '30d', 'all'] as Range[]).map((r) => (
                 <button key={r} className={range === r ? 'active' : ''} onClick={() => setRange(r)}>{RANGE_LABELS[r]}</button>
               ))}
             </div>
             <div className="tool-group">
+              <button className="tool-btn notify-btn" title="Notifications terrain" aria-label={`${alertCount} notifications terrain`}>
+                <span className="notify-dot" aria-hidden="true" />
+                {alertCount}
+              </button>
               <button className="tool-btn" onClick={() => setPanel(panel === 'settings' ? null : 'settings')} aria-label="Reglages des seuils d'alerte" title="Reglages des seuils d'alerte">⚙</button>
               <button className="tool-btn" onClick={exportCsv} disabled={rows.length === 0} title="Exporter les actions en CSV">CSV</button>
               <button className="tool-btn" onClick={exportPdf} disabled={rows.length === 0} title="Generer un rapport PDF professionnel">PDF</button>
               <button className="tool-btn" onClick={toggleFullscreen} aria-label="Plein ecran" title="Mode presentation plein ecran">⛶</button>
               <button className="tool-btn" onClick={() => setPanel(panel === 'share' ? null : 'share')} aria-label="Partager / QR code" title="Partager / QR code">⤴</button>
+              <button className="tool-btn theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Changer le theme" title="Changer le theme">
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </button>
             </div>
             <button className="refresh" onClick={() => void refresh()} disabled={loading || !isSupabaseConfigured}>
               Actualiser
@@ -516,7 +607,7 @@ export default function App() {
         </header>
 
         {error ? <div className="notice danger">{error}</div> : null}
-        {loading ? <div className="notice">Chargement des analyses Supabase...</div> : null}
+        {loading ? <DashboardSkeleton label="Chargement des analyses terrain..." /> : null}
 
         {!loading && rows.length === 0 && !error ? (
           <div className="empty">Aucune analyse disponible pour ce perimetre.</div>
@@ -575,11 +666,12 @@ export default function App() {
                 detail={highActions > 0 ? 'A traiter maintenant' : 'Rayons propres'}
                 tone={highActions > 0 ? 'danger' : 'success'}
                 pulse={highActions > 0}
+                spark={timeline.map((point) => point.actions)}
               />
-              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" />
+              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" spark={timeline.map((point) => 100 - point.conformity)} />
               <MetricCard label="Actions a faire aujourd'hui" value={String(actionsToday)} detail={`${mediumActions} priorite moyenne`} tone={actionsToday > 0 ? 'warning' : 'success'} />
               <MetricCard label="Dernier audit realise" value={lastAuditLabel} detail={`${analysedToday} analyses aujourd'hui`} />
-              <MetricCard label="Progression apres correction" value={String(latestTimeline?.corrected ?? 0)} detail="Anomalies corrigees" tone="success" />
+              <MetricCard label="Progression apres correction" value={String(latestTimeline?.corrected ?? 0)} detail="Anomalies corrigees" tone="success" spark={timeline.map((point) => point.corrected)} />
               <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} />
             </section>
 
@@ -630,6 +722,22 @@ export default function App() {
                 <TerrainRecommendationList immediate={immediate} openActions={openActions} />
               </section>
 
+              <section className="panel activity-panel">
+                <PanelTitle eyebrow="Activite terrain" title="Ce qui vient de bouger" />
+                <ActivityFeed items={activityItems} />
+              </section>
+
+              <section className="panel action-center-panel">
+                <PanelTitle eyebrow="Tour du jour" title="Focus execution" />
+                <ActionCenter
+                  items={[
+                    ['Verifier maintenant', immediate?.shelf ?? 'Rayons stables'],
+                    ['Equipe', analysedToday > 0 ? `${analysedToday} audits deja lus` : 'Lancer le premier controle'],
+                    ['Validation', openActions > 0 ? 'Relancer audit apres correction' : 'Maintenir le rythme'],
+                  ]}
+                />
+              </section>
+
               <section className="panel audits-panel" id="audits">
                 <PanelTitle eyebrow="Derniers audits du rayon" title="Analyses recentes" />
                 <AuditCardList rows={latestAudits} />
@@ -658,6 +766,17 @@ function Splash({ brand, sub, progress, onSkip }: { brand: string; sub: string; 
         <span className="splash-hint">Chargement des analyses…</span>
       </div>
     </div>
+  );
+}
+
+function DashboardSkeleton({ label }: { label: string }) {
+  return (
+    <section className="skeleton-shell" aria-label={label}>
+      <span>{label}</span>
+      <div className="skeleton-grid">
+        {Array.from({ length: 7 }).map((_, index) => <i key={index} />)}
+      </div>
+    </section>
   );
 }
 
@@ -749,6 +868,31 @@ function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
   return <span className={`status-badge ${tone}`}>{label}</span>;
 }
 
+function Sparkline({ values }: { values: number[] }) {
+  const clean = values.filter((value) => Number.isFinite(value));
+  const series = clean.length >= 2
+    ? clean
+    : clean.length === 1
+      ? [clean[0] * 0.86, clean[0], clean[0] * 0.94]
+      : [18, 34, 26, 42];
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const range = Math.max(1, max - min);
+  const points = series
+    .map((value, index) => {
+      const x = (index / (series.length - 1)) * 100;
+      const y = 30 - ((value - min) / range) * 24;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+
+  return (
+    <svg className="sparkline" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={points} />
+    </svg>
+  );
+}
+
 function MetricCard({
   label,
   value,
@@ -756,6 +900,7 @@ function MetricCard({
   tone = 'primary',
   pulse = false,
   sub,
+  spark,
 }: {
   label: string;
   value: string;
@@ -763,6 +908,7 @@ function MetricCard({
   tone?: Tone;
   pulse?: boolean;
   sub?: string;
+  spark?: number[];
 }) {
   return (
     <article className={`metric-card ${tone}${pulse ? ' pulse' : ''}`}>
@@ -770,6 +916,7 @@ function MetricCard({
       <strong><CountUp value={value} /></strong>
       <small>{detail}</small>
       {sub ? <small className="metric-sub">{sub}</small> : null}
+      {spark ? <Sparkline values={spark} /> : null}
     </article>
   );
 }
@@ -837,6 +984,38 @@ function DecisionStack({ items }: { items: [string, string][] }) {
         <div key={label}>
           <span>{label}</span>
           <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ActivityFeed({ items }: { items: ActivityItem[] }) {
+  return (
+    <div className="activity-feed">
+      {items.map((item) => (
+        <div className="activity-item" key={`${item.avatar}-${item.title}`}>
+          <span className={`activity-avatar ${item.tone}`}>{item.avatar}</span>
+          <div>
+            <strong>{item.title}</strong>
+            <small>{item.meta}</small>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ActionCenter({ items }: { items: [string, string][] }) {
+  return (
+    <div className="action-center">
+      {items.map(([label, value], index) => (
+        <div key={label} className="action-center-row">
+          <span>{String(index + 1).padStart(2, '0')}</span>
+          <div>
+            <small>{label}</small>
+            <strong>{value}</strong>
+          </div>
         </div>
       ))}
     </div>
