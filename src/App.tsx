@@ -4,8 +4,6 @@ import {
   AnalysisRow,
   average,
   formatDate,
-  formatHours,
-  formatMAD,
   isSupabaseConfigured,
   loadAnalyses,
   summarize,
@@ -333,7 +331,6 @@ export default function App() {
   const [backTh, setBackTh] = useState(initial.backTh);
   const [panel, setPanel] = useState<null | 'settings' | 'share'>(null);
   const [copied, setCopied] = useState(false);
-  const [boost, setBoost] = useState(5);
   const [showSplash, setShowSplash] = useState(true);
   const [splashProgress, setSplashProgress] = useState(8);
   const [theme, setTheme] = useState<Theme>(readTheme);
@@ -524,11 +521,6 @@ export default function App() {
     },
   ];
 
-  // Valorisation business (hypotheses ajustables dans config.ts)
-  const ruptureCostDaily = summary.emptySpaces * dashboardConfig.costPerFacing;
-  const hoursSaved = (summary.audits * dashboardConfig.minPerManualAudit) / 60;
-  const conformityGap = Math.max(1, 100 - summary.avgProfitability);
-  const recovered = ruptureCostDaily * (Math.min(boost, conformityGap) / conformityGap);
   const hasActiveFilters =
     query.trim().length > 0 ||
     selectedShelf !== 'all' ||
