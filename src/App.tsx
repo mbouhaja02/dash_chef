@@ -667,10 +667,9 @@ export default function App() {
                 detail={highActions > 0 ? 'A traiter maintenant' : 'Rayons propres'}
                 tone={highActions > 0 ? 'danger' : 'success'}
                 pulse={highActions > 0}
-                spark={timeline.map((point) => point.actions)}
                 variant="risk"
               />
-              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" spark={timeline.map((point) => 100 - point.conformity)} variant="operational" />
+              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" variant="operational" />
               <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} variant="operational" />
               <MetricCard label="Dernier audit realise" value={lastAuditLabel} detail={`${analysedToday} analyses aujourd'hui`} variant="operational" />
             </section>
@@ -832,10 +831,10 @@ function ErrorNotice({ message, onRetry }: { message: string; onRetry: () => voi
 function ActionHeroCard({ immediate, terrainReady }: { immediate?: ActionRow; terrainReady: boolean }) {
   if (!immediate) {
     return (
-      <section className="action-hero-card empty-action-hero" aria-label="Action prioritaire">
+      <section className="action-hero-card empty-action-hero" aria-label="Action prioritaire maintenant">
         <div className="hero-alert-dot success" aria-hidden="true" />
         <div>
-          <span className="hero-eyebrow">Action prioritaire</span>
+          <span className="hero-eyebrow">Action prioritaire maintenant</span>
           <h2>Aucune action urgente sur cette periode.</h2>
           <p>Les rayons visibles sont stables. Maintenir le tour de controle et relancer un audit si le facing change.</p>
         </div>
@@ -847,15 +846,16 @@ function ActionHeroCard({ immediate, terrainReady }: { immediate?: ActionRow; te
   const tone = toneFromPriority(immediate.priority);
 
   return (
-    <section className={`action-hero-card hero-${tone}`} aria-label="Action prioritaire">
+    <section className={`action-hero-card hero-${tone}`} aria-label="Action prioritaire maintenant">
       <div className={`hero-alert-dot ${tone}`} aria-hidden="true" />
       <div className="hero-main">
         <div className="hero-topline">
-          <span className="hero-eyebrow">Action prioritaire</span>
+          <span className="hero-eyebrow">Action prioritaire maintenant</span>
           <StatusBadge tone={tone} label={`Priorite ${immediate.priority.toLowerCase()}`} />
+          <StatusBadge tone={toneFromStatus(immediate.status)} label={immediate.status} />
         </div>
         <h2>{immediate.shelf}</h2>
-        <p className="hero-meta">{immediate.category} - {formatDate(immediate.lastAudit)}</p>
+        <p className="hero-meta">{immediate.category} - Priorite {immediate.priority.toLowerCase()} - {formatDate(immediate.lastAudit)}</p>
         <strong>{immediate.issue} detectee</strong>
         <p>{immediate.recommendation}</p>
       </div>
@@ -864,7 +864,7 @@ function ActionHeroCard({ immediate, terrainReady }: { immediate?: ActionRow; te
         <span><b>{pct(immediate.backRatio)}</b> back-side</span>
         <span><b>{pct(immediate.compliance)}</b> score</span>
       </div>
-      <div className="hero-cta">A traiter maintenant</div>
+      <div className="hero-cta">A traiter en premier</div>
     </section>
   );
 }
@@ -1042,8 +1042,21 @@ function TerrainFilterBar({
   active: boolean;
   onReset: () => void;
 }) {
+  const activeItems = [
+    selectedShelf !== 'all' ? `Rayon ${selectedShelf}` : null,
+    selectedCategory !== 'all' ? `Categorie ${selectedCategory}` : null,
+    selectedPriority !== 'all' ? `Priorite ${selectedPriority.toLowerCase()}` : null,
+    urgentOnly ? 'Actions urgentes' : null,
+  ].filter(Boolean);
+
   return (
     <section className="filter-bar" aria-label="Filtres terrain">
+      {active ? (
+        <div className="filter-summary">
+          <span>Filtres actifs :</span>
+          <strong>{activeItems.join(' - ')}</strong>
+        </div>
+      ) : null}
       <label>
         <span>Rayon</span>
         <select value={selectedShelf} onChange={(event) => onShelf(event.target.value)}>
@@ -1113,30 +1126,47 @@ function ActionTable({ actions, emptyTh, backTh, onReset }: { actions: ActionRow
     );
   }
 
+  const highCount = actions.filter((action) => action.priority === 'Haute').length;
+
   return (
-    <div className="action-card-list">
-      {actions.map((action) => (
-        <article className={`task-action-card row-${toneFromPriority(action.priority)}`} key={action.id}>
-          <div className="task-head">
-            <StatusBadge tone={toneFromPriority(action.priority)} label={action.priority} />
-            <span>{formatDate(action.lastAudit)}</span>
-          </div>
-          <div className="task-body">
-            <div>
-              <strong>{action.shelf}</strong>
-              <small>{action.category} - {action.store}</small>
+    <div className="action-card-list" aria-label="Liste des priorites terrain">
+      <div className="action-list-summary">
+        <strong>{actions.length} actions a traiter</strong>
+        <span>{highCount} hautes priorites - triees par urgence</span>
+      </div>
+      {actions.map((action) => {
+        const priorityTone = toneFromPriority(action.priority);
+        return (
+          <article className={`task-action-card row-${priorityTone}`} key={action.id}>
+            <div className="task-top">
+              <div>
+                <StatusBadge tone={priorityTone} label={action.priority} />
+                <span>{formatDate(action.lastAudit)}</span>
+              </div>
+              <StatusBadge tone={toneFromStatus(action.status)} label={action.status} />
             </div>
-            <p>{action.issue}</p>
-            <em>{action.recommendation}</em>
-          </div>
-          <div className="task-chips">
-            <span className={action.emptyRatio >= emptyTh ? 'danger' : action.emptyRatio >= emptyTh * 0.7 ? 'warning' : 'success'}>{pct(action.emptyRatio)} vide</span>
-            <span className={action.backRatio >= backTh ? 'warning' : 'success'}>{pct(action.backRatio)} back-side</span>
-            <span>{pct(action.compliance)} score</span>
-            <StatusBadge tone={toneFromStatus(action.status)} label={action.status} />
-          </div>
-        </article>
-      ))}
+
+            <div className="task-title">
+              <div>
+                <strong>{action.shelf}</strong>
+                <small>{action.category} - {action.store}</small>
+              </div>
+              <p>{action.issue}</p>
+            </div>
+
+            <div className="task-chips">
+              <span className={action.emptyRatio >= emptyTh ? 'danger' : action.emptyRatio >= emptyTh * 0.7 ? 'warning' : 'success'}>{pct(action.emptyRatio)} vide</span>
+              <span className={action.backRatio >= backTh ? 'warning' : 'success'}>{pct(action.backRatio)} back-side</span>
+              <span>{pct(action.compliance)} score</span>
+            </div>
+
+            <div className="task-recommendation">
+              <p>{action.recommendation}</p>
+              <button type="button">A traiter</button>
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
