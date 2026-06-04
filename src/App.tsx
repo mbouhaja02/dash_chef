@@ -485,10 +485,8 @@ export default function App() {
   const mediumActions = actions.filter((action) => action.priority === 'Moyenne').length;
   const analysedToday = actions.filter((action) => isToday(action.lastAudit)).length;
   const openActions = highActions + mediumActions;
-  const actionsToday = actions.filter((action) => action.priority !== 'Faible' && isToday(action.lastAudit)).length || openActions;
   const lastAuditLabel = latestAudits[0] ? formatDate(latestAudits[0].audit_date) : 'N/A';
   const maxActions = Math.max(1, ...timeline.map((point) => point.actions));
-  const latestTimeline = timeline[timeline.length - 1];
   const terrainReady = summary.avgProfitability >= 85 && highActions === 0;
   const alertCount = highActions || openActions;
   const activityItems: ActivityItem[] = [
@@ -647,7 +645,7 @@ export default function App() {
           </div>
         </header>
 
-        {error ? <div className="notice danger">{error}</div> : null}
+        {error ? <ErrorNotice message={error} onRetry={() => void refresh(true)} /> : null}
         {loading ? <DashboardSkeleton label="Chargement des analyses terrain..." /> : null}
 
         {!loading && rows.length === 0 && !error ? (
@@ -661,47 +659,22 @@ export default function App() {
 
         {rows.length > 0 ? (
           <>
-            <section className="command-grid field-command-grid">
-              <article className="command-card score-card primary-metric-card">
-                <div className="section-heading">
-                  <span>Score terrain</span>
-                  <StatusBadge tone={terrainReady ? 'success' : 'warning'} label={terrainReady ? 'Rayons propres' : 'Tour requis'} />
-                </div>
-                <div className="score-layout">
-                  <div>
-                    <strong className="score-value"><CountUp value={pct(summary.avgProfitability)} /></strong>
-                    <p>{highActions} actions hautes et {mediumActions} actions moyennes a traiter.</p>
-                  </div>
-                  <div className="score-ring" style={{ '--score': `${clamp(summary.avgProfitability)}%` } as CSSProperties}>
-                    <span><CountUp value={pct(summary.avgProfitability)} /></span>
-                  </div>
-                </div>
-              </article>
+            <ActionHeroCard immediate={immediate} terrainReady={terrainReady} />
 
-              <article className="command-card priority-card action-hero-card">
-                <div className="section-heading">
-                  <span>Action prioritaire</span>
-                  <StatusBadge tone={immediate ? toneFromPriority(immediate.priority) : 'primary'} label={immediate?.priority ?? 'N/A'} />
-                </div>
-                <strong className="priority-title">{immediate?.shelf ?? 'Aucun rayon'}</strong>
-                <p>{immediate ? `${immediate.action}: ${pct(immediate.emptyRatio)} vide, ${pct(immediate.backRatio)} back-side.` : 'Aucune action detectee.'}</p>
-                <div className="mini-metrics">
-                  <span>Consigne terrain</span>
-                  <strong>{immediate?.action ?? 'Maintenir controle rayon'}</strong>
-                </div>
-              </article>
-
-              <article className="command-card execution-card daily-round-card">
-                <div className="section-heading">
-                  <span>Tour du jour</span>
-                  <StatusBadge tone={analysedToday > 0 ? 'success' : 'warning'} label={`${analysedToday} analyses`} />
-                </div>
-                <strong className="priority-title">{latestTimeline?.corrected ?? 0} anomalies corrigees</strong>
-                <p>Dernier passage synchronise avec Supabase en temps reel.</p>
-                <div className="progress-line">
-                  <i style={{ width: `${clamp((analysedToday / Math.max(1, actions.length)) * 100)}%` }} />
-                </div>
-              </article>
+            <section className="metric-grid field-kpi-grid">
+              <MetricCard label="Score terrain" value={pct(summary.avgProfitability)} detail="Conformite terrain" tone="success" variant="primary" />
+              <MetricCard
+                label="Actions ouvertes"
+                value={String(openActions)}
+                detail={highActions > 0 ? 'A traiter maintenant' : 'Rayons propres'}
+                tone={highActions > 0 ? 'danger' : 'success'}
+                pulse={highActions > 0}
+                spark={timeline.map((point) => point.actions)}
+                variant="risk"
+              />
+              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" spark={timeline.map((point) => 100 - point.conformity)} variant="operational" />
+              <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} variant="operational" />
+              <MetricCard label="Dernier audit realise" value={lastAuditLabel} detail={`${analysedToday} analyses aujourd'hui`} variant="operational" />
             </section>
 
             <TerrainFilterBar
@@ -719,24 +692,6 @@ export default function App() {
               onReset={resetFilters}
             />
 
-            <section className="metric-grid">
-              <MetricCard label="Score terrain moyen" value={pct(summary.avgProfitability)} detail="Conformite terrain" tone="success" variant="primary" />
-              <MetricCard
-                label="Anomalies ouvertes"
-                value={String(openActions)}
-                detail={highActions > 0 ? 'A traiter maintenant' : 'Rayons propres'}
-                tone={highActions > 0 ? 'danger' : 'success'}
-                pulse={highActions > 0}
-                spark={timeline.map((point) => point.actions)}
-                variant="risk"
-              />
-              <MetricCard label="Zones vides detectees" value={String(summary.emptySpaces)} detail={`${pct(summary.avgEmptyRatio)} moyen`} tone="warning" spark={timeline.map((point) => 100 - point.conformity)} variant="operational" />
-              <MetricCard label="Actions a faire aujourd'hui" value={String(actionsToday)} detail={`${mediumActions} priorite moyenne`} tone={actionsToday > 0 ? 'warning' : 'success'} variant="progress" />
-              <MetricCard label="Dernier audit realise" value={lastAuditLabel} detail={`${analysedToday} analyses aujourd'hui`} variant="operational" />
-              <MetricCard label="Progression apres correction" value={String(latestTimeline?.corrected ?? 0)} detail="Anomalies corrigees" tone="success" spark={timeline.map((point) => point.corrected)} variant="progress" />
-              <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} variant="operational" />
-            </section>
-
             <section className="content-grid">
               <section className="panel table-panel" id="actions">
                 <div className="panel-head">
@@ -750,6 +705,22 @@ export default function App() {
                   />
                 </div>
                 <ActionTable actions={filteredActions.slice(0, 12)} emptyTh={emptyTh} backTh={backTh} onReset={resetFilters} />
+              </section>
+
+              <section className="panel action-center-panel">
+                <PanelTitle eyebrow="Tour du jour" title="Ordre de passage recommande" />
+                <ActionCenter
+                  items={[
+                    ['Verifier maintenant', immediate?.shelf ?? 'Rayons stables'],
+                    ['Equipe', analysedToday > 0 ? `${analysedToday} audits deja lus` : 'Lancer le premier controle'],
+                    ['Validation', openActions > 0 ? 'Relancer audit apres correction' : 'Maintenir le rythme'],
+                  ]}
+                />
+              </section>
+
+              <section className="panel activity-panel">
+                <PanelTitle eyebrow="Activite terrain" title="Ce qui vient de bouger" />
+                <ActivityFeed items={activityItems} />
               </section>
 
               <section className="panel decisions-panel">
@@ -773,22 +744,6 @@ export default function App() {
               <section className="panel recommendations-panel">
                 <PanelTitle eyebrow="Recommandations terrain" title="Actions concretes" />
                 <TerrainRecommendationList immediate={immediate} openActions={openActions} />
-              </section>
-
-              <section className="panel activity-panel">
-                <PanelTitle eyebrow="Activite terrain" title="Ce qui vient de bouger" />
-                <ActivityFeed items={activityItems} />
-              </section>
-
-              <section className="panel action-center-panel">
-                <PanelTitle eyebrow="Tour du jour" title="Focus execution" />
-                <ActionCenter
-                  items={[
-                    ['Verifier maintenant', immediate?.shelf ?? 'Rayons stables'],
-                    ['Equipe', analysedToday > 0 ? `${analysedToday} audits deja lus` : 'Lancer le premier controle'],
-                    ['Validation', openActions > 0 ? 'Relancer audit apres correction' : 'Maintenir le rythme'],
-                  ]}
-                />
               </section>
 
               <section className="panel audits-panel" id="audits">
@@ -860,6 +815,58 @@ function EmptyState({
         <button className="ghost-btn reset-btn" type="button" onClick={onAction}>{actionLabel}</button>
       ) : null}
     </div>
+  );
+}
+
+function ErrorNotice({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="notice danger error-notice" role="alert">
+      <div>
+        <strong>Impossible de charger les analyses</strong>
+        <p>{message}</p>
+      </div>
+      <button className="ghost-btn reset-btn" type="button" onClick={onRetry}>Reessayer</button>
+    </div>
+  );
+}
+
+function ActionHeroCard({ immediate, terrainReady }: { immediate?: ActionRow; terrainReady: boolean }) {
+  if (!immediate) {
+    return (
+      <section className="action-hero-card empty-action-hero" aria-label="Action prioritaire">
+        <div className="hero-alert-dot success" aria-hidden="true" />
+        <div>
+          <span className="hero-eyebrow">Action prioritaire</span>
+          <h2>Aucune action urgente sur cette periode.</h2>
+          <p>Les rayons visibles sont stables. Maintenir le tour de controle et relancer un audit si le facing change.</p>
+        </div>
+        <StatusBadge tone={terrainReady ? 'success' : 'primary'} label={terrainReady ? 'Terrain propre' : 'Controle'} />
+      </section>
+    );
+  }
+
+  const tone = toneFromPriority(immediate.priority);
+
+  return (
+    <section className={`action-hero-card hero-${tone}`} aria-label="Action prioritaire">
+      <div className={`hero-alert-dot ${tone}`} aria-hidden="true" />
+      <div className="hero-main">
+        <div className="hero-topline">
+          <span className="hero-eyebrow">Action prioritaire</span>
+          <StatusBadge tone={tone} label={`Priorite ${immediate.priority.toLowerCase()}`} />
+        </div>
+        <h2>{immediate.shelf}</h2>
+        <p className="hero-meta">{immediate.category} - {formatDate(immediate.lastAudit)}</p>
+        <strong>{immediate.issue} detectee</strong>
+        <p>{immediate.recommendation}</p>
+      </div>
+      <div className="hero-metrics" aria-label="Indicateurs action prioritaire">
+        <span><b>{pct(immediate.emptyRatio)}</b> vide</span>
+        <span><b>{pct(immediate.backRatio)}</b> back-side</span>
+        <span><b>{pct(immediate.compliance)}</b> score</span>
+      </div>
+      <div className="hero-cta">A traiter maintenant</div>
+    </section>
   );
 }
 
@@ -995,13 +1002,16 @@ function MetricCard({
   spark?: number[];
   variant?: 'primary' | 'risk' | 'operational' | 'progress' | 'insight';
 }) {
+  const cleanSpark = spark?.filter((value) => Number.isFinite(value));
+  const showSpark = cleanSpark && cleanSpark.length >= 2;
+
   return (
     <article className={`metric-card metric-${variant} ${tone}${pulse ? ' pulse' : ''}`}>
       <span>{label}{pulse ? <i className="live-dot" aria-hidden="true" /> : null}</span>
       <strong><CountUp value={value} /></strong>
       <small>{detail}</small>
       {sub ? <small className="metric-sub">{sub}</small> : null}
-      {spark ? <Sparkline values={spark} /> : null}
+      {showSpark ? <Sparkline values={cleanSpark} /> : null}
     </article>
   );
 }
@@ -1062,9 +1072,11 @@ function TerrainFilterBar({
         <input type="checkbox" checked={urgentOnly} onChange={(event) => onUrgent(event.target.checked)} />
         <span>Actions urgentes</span>
       </label>
-      <button className="filter-reset" type="button" onClick={onReset} disabled={!active}>
-        Reset filtres
-      </button>
+      {active ? (
+        <button className="filter-reset" type="button" onClick={onReset}>
+          Reset filtres
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -1103,36 +1115,29 @@ function ActionTable({ actions, emptyTh, backTh, onReset }: { actions: ActionRow
   }
 
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Rayon</th>
-            <th>Probleme</th>
-            <th>Vide</th>
-            <th>Back-side</th>
-            <th>Recommandation</th>
-            <th>Statut</th>
-            <th>Priorite</th>
-          </tr>
-        </thead>
-        <tbody>
-          {actions.map((action) => (
-            <tr key={action.id} className={`row-${toneFromPriority(action.priority)}`}>
-              <td>
-                <strong>{action.shelf}</strong>
-                <small>{action.category} - {action.store}</small>
-              </td>
-              <td><strong>{action.issue}</strong></td>
-              <td><RatioCell value={action.emptyRatio} tone={action.emptyRatio >= emptyTh ? 'danger' : action.emptyRatio >= emptyTh * 0.7 ? 'warning' : 'success'} /></td>
-              <td><RatioCell value={action.backRatio} tone={action.backRatio >= backTh ? 'warning' : 'success'} /></td>
-              <td>{action.recommendation}</td>
-              <td><StatusBadge tone={toneFromStatus(action.status)} label={action.status} /></td>
-              <td><StatusBadge tone={toneFromPriority(action.priority)} label={action.priority} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="action-card-list">
+      {actions.map((action) => (
+        <article className={`task-action-card row-${toneFromPriority(action.priority)}`} key={action.id}>
+          <div className="task-head">
+            <StatusBadge tone={toneFromPriority(action.priority)} label={action.priority} />
+            <span>{formatDate(action.lastAudit)}</span>
+          </div>
+          <div className="task-body">
+            <div>
+              <strong>{action.shelf}</strong>
+              <small>{action.category} - {action.store}</small>
+            </div>
+            <p>{action.issue}</p>
+            <em>{action.recommendation}</em>
+          </div>
+          <div className="task-chips">
+            <span className={action.emptyRatio >= emptyTh ? 'danger' : action.emptyRatio >= emptyTh * 0.7 ? 'warning' : 'success'}>{pct(action.emptyRatio)} vide</span>
+            <span className={action.backRatio >= backTh ? 'warning' : 'success'}>{pct(action.backRatio)} back-side</span>
+            <span>{pct(action.compliance)} score</span>
+            <StatusBadge tone={toneFromStatus(action.status)} label={action.status} />
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
@@ -1281,10 +1286,18 @@ function AuditCardList({ rows }: { rows: AnalysisRow[] }) {
 
 function Timeline({ points, maxActions }: { points: TimelinePoint[]; maxActions: number }) {
   const [active, setActive] = useState<number | null>(null);
-  if (points.length === 0) return <p className="muted">Pas encore assez de donnees temporelles.</p>;
+  if (points.length < 2) {
+    return (
+      <EmptyState
+        compact
+        title="Pas encore assez d'historique"
+        detail="Il faut au moins deux dates d'audit pour afficher une evolution fiable."
+      />
+    );
+  }
 
   const W = 720;
-  const H = 240;
+  const H = 205;
   const padL = 34;
   const padR = 12;
   const padT = 16;
