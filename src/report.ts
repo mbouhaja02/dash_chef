@@ -204,13 +204,13 @@ export function generateChefReport(data: ChefReport): void {
   const H = doc.internal.pageSize.getHeight();
   const M = 40;
 
-  header(doc, M, W, "Plan d'action terrain", `Perimetre : ${data.perimetre}   •   Periode : ${data.periode}   •   Edite le ${nowLabel()}`);
+  header(doc, M, W, "Plan d'action terrain", `Periode : ${data.periode}   •   Edite le ${nowLabel()}`);
 
   let y = 122;
   sectionTitle(doc, M, y, 'Synthese terrain');
   y += 14;
   y = kpiRow(doc, M, y, W, [
-    { label: 'Profitabilite', value: pct(data.summary.avgProfitability), tone: data.summary.avgProfitability >= 85 ? OK : data.summary.avgProfitability >= 65 ? WARN : BAD },
+    { label: 'Score terrain', value: pct(data.summary.avgProfitability), tone: data.summary.avgProfitability >= 85 ? OK : data.summary.avgProfitability >= 65 ? WARN : BAD },
     { label: 'Actions hautes', value: String(data.counts.high), tone: data.counts.high > 0 ? BAD : OK },
     { label: 'Actions moyennes', value: String(data.counts.medium), tone: WARN },
     { label: 'Vide moyen', value: pct(data.summary.avgEmptyRatio), tone: WARN },

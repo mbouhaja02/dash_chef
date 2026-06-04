@@ -13,6 +13,16 @@ import {
 } from './dashboard';
 import { dashboardConfig } from './config';
 import { generateChefReport } from './report';
+import {
+  getComplianceScore,
+  getFillRate,
+  getMainIssue,
+  getPriorityLevel,
+  getSeverityLevel,
+  issueWeight,
+  priorityWeight,
+  type MainIssue,
+} from './shelfguideCalculations';
 import './styles.css';
 
 type Tone = 'danger' | 'warning' | 'success' | 'primary';
@@ -27,6 +37,10 @@ interface ActionRow {
   status: string;
   priority: Priority;
   action: string;
+  issue: MainIssue;
+  recommendation: string;
+  compliance: number;
+  fillRate: number;
   emptyRatio: number;
   backRatio: number;
   profitability: number;
@@ -79,9 +93,7 @@ function isToday(value: string): boolean {
 }
 
 function statusOf(row: AnalysisRow): string {
-  if (row.status === 'Critique' || row.severity === 'high' || row.weighted_profitability_percent < 65) return 'Critique';
-  if (row.status === 'Moyen' || row.weighted_profitability_percent < 85) return 'Moyen';
-  return 'Bon';
+  return getSeverityLevel(row);
 }
 
 function toneFromStatus(status: string): Tone {
@@ -97,28 +109,17 @@ function toneFromPriority(priority: Priority): Tone {
 }
 
 function actionFor(row: AnalysisRow): string {
-  if (row.empty_ratio_percent >= 10 || row.empty_spaces >= 3) return 'Recharger le facing';
-  if (row.back_ratio_percent >= 7 || row.back_products >= 3) return 'Remettre produits en front';
-  if (row.weighted_profitability_percent < 75) return 'Verifier implantation';
+  const issue = getMainIssue(row);
+  if (row.recommendation.trim()) return row.recommendation.trim();
+  if (issue === 'Rupture visible') return 'Recharger les facings vides';
+  if (issue === 'Mauvaise orientation') return 'Remettre les produits en front';
+  if (issue === 'Performance faible') return 'Verifier implantation et stock reserve';
+  if (issue === 'Audit incomplet') return 'Relancer un audit complet du rayon';
   return 'Controle rapide';
 }
 
 function priorityFor(row: AnalysisRow): Priority {
-  if (
-    statusOf(row) === 'Critique' ||
-    row.empty_ratio_percent >= 15 ||
-    row.back_ratio_percent >= 10 ||
-    row.weighted_profitability_percent < 70
-  ) return 'Haute';
-
-  if (
-    statusOf(row) === 'Moyen' ||
-    row.empty_ratio_percent >= 7 ||
-    row.back_ratio_percent >= 5 ||
-    row.weighted_profitability_percent < 85
-  ) return 'Moyenne';
-
-  return 'Faible';
+  return getPriorityLevel(row);
 }
 
 function issueCount(rows: AnalysisRow[]): number {
@@ -130,12 +131,16 @@ function buildActions(rows: AnalysisRow[]): ActionRow[] {
     .sort((a, b) => new Date(b.audit_date).getTime() - new Date(a.audit_date).getTime())
     .map((row) => {
       const priority = priorityFor(row);
+      const compliance = getComplianceScore(row);
+      const issue = getMainIssue(row);
       const score =
-        (100 - row.weighted_profitability_percent) +
+        (100 - compliance) +
         row.empty_ratio_percent * 1.7 +
         row.back_ratio_percent * 1.3 +
         row.empty_spaces * 3 +
-        row.back_products * 2;
+        row.back_products * 2 +
+        priorityWeight(priority) * 12 +
+        issueWeight(issue) * 4;
 
       return {
         id: row.id,
@@ -145,9 +150,13 @@ function buildActions(rows: AnalysisRow[]): ActionRow[] {
         status: statusOf(row),
         priority,
         action: actionFor(row),
+        issue,
+        recommendation: actionFor(row),
+        compliance,
+        fillRate: getFillRate(row),
         emptyRatio: row.empty_ratio_percent,
         backRatio: row.back_ratio_percent,
-        profitability: row.weighted_profitability_percent,
+        profitability: compliance,
         emptySpaces: row.empty_spaces,
         backProducts: row.back_products,
         lastAudit: row.audit_date,
@@ -168,7 +177,7 @@ function buildCategories(rows: AnalysisRow[]): CategoryFocus[] {
     .map(([category, items]) => ({
       category,
       actions: items.filter((item) => priorityFor(item) !== 'Faible').length,
-      avgProfitability: average(items.map((item) => item.weighted_profitability_percent)),
+      avgProfitability: average(items.map((item) => getComplianceScore(item))),
       emptySpaces: items.reduce((sum, item) => sum + item.empty_spaces, 0),
       backProducts: items.reduce((sum, item) => sum + item.back_products, 0),
     }))
@@ -193,7 +202,7 @@ function buildTimeline(rows: AnalysisRow[], maxPoints = 7): TimelinePoint[] {
 
       return {
         label: shortDay(key),
-        conformity: average(items.map((item) => item.weighted_profitability_percent)),
+        conformity: average(items.map((item) => getComplianceScore(item))),
         actions,
         corrected: Math.max(0, previous - actions),
       };
@@ -220,9 +229,9 @@ function toggleFullscreen(): void {
   else void document.documentElement.requestFullscreen?.();
 }
 
-type Range = '7d' | '30d' | 'all';
-const RANGE_DAYS: Record<Range, number> = { '7d': 7, '30d': 30, all: 36500 };
-const RANGE_LABELS: Record<Range, string> = { '7d': '7 jours', '30d': '30 jours', all: 'Tout' };
+type Range = 'today' | '7d' | '30d' | 'all';
+const RANGE_DAYS: Record<Exclude<Range, 'today' | 'all'>, number> = { '7d': 7, '30d': 30 };
+const RANGE_LABELS: Record<Range, string> = { today: "Aujourd'hui", '7d': '7 jours', '30d': '30 jours', all: 'Tout' };
 const DEFAULT_EMPTY = 10;
 const DEFAULT_BACK = 7;
 
@@ -235,6 +244,7 @@ function readTheme(): Theme {
 }
 
 function scopeByRange(rows: AnalysisRow[], range: Range): AnalysisRow[] {
+  if (range === 'today') return rows.filter((row) => isToday(row.audit_date));
   if (range === 'all') return rows;
   const cutoff = Date.now() - RANGE_DAYS[range] * 86400000;
   return rows.filter((row) => new Date(row.audit_date).getTime() >= cutoff);
@@ -244,7 +254,7 @@ function readParams() {
   const p = new URLSearchParams(window.location.search);
   const r = p.get('range');
   return {
-    range: (r === '7d' || r === '30d' || r === 'all' ? r : 'all') as Range,
+    range: (r === 'today' || r === '7d' || r === '30d' || r === 'all' ? r : 'all') as Range,
     query: p.get('q') ?? '',
     emptyTh: Number(p.get('empty')) || DEFAULT_EMPTY,
     backTh: Number(p.get('back')) || DEFAULT_BACK,
@@ -326,6 +336,10 @@ export default function App() {
   const [showSplash, setShowSplash] = useState(true);
   const [splashProgress, setSplashProgress] = useState(8);
   const [theme, setTheme] = useState<Theme>(readTheme);
+  const [selectedShelf, setSelectedShelf] = useState('all');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedPriority, setSelectedPriority] = useState<'all' | Priority>('all');
+  const [urgentOnly, setUrgentOnly] = useState(false);
   const quickSearchRef = useRef<HTMLInputElement>(null);
 
   // Splash : barre de progression au premier chargement uniquement
@@ -378,7 +392,23 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const scopedRows = useMemo(() => scopeByRange(rows, range), [rows, range]);
+  const rangedRows = useMemo(() => scopeByRange(rows, range), [rows, range]);
+  const shelfOptions = useMemo(
+    () => Array.from(new Set(rangedRows.map((row) => row.shelf_name).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [rangedRows],
+  );
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(rangedRows.map((row) => row.category).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [rangedRows],
+  );
+  const scopedRows = useMemo(() => rangedRows.filter((row) => {
+    const priority = priorityFor(row);
+    if (selectedShelf !== 'all' && row.shelf_name !== selectedShelf) return false;
+    if (selectedCategory !== 'all' && row.category !== selectedCategory) return false;
+    if (selectedPriority !== 'all' && priority !== selectedPriority) return false;
+    if (urgentOnly && priority !== 'Haute') return false;
+    return true;
+  }), [rangedRows, selectedShelf, selectedCategory, selectedPriority, urgentOnly]);
   const summary = useMemo(() => summarize(scopedRows), [scopedRows]);
   const actions = useMemo(() => buildActions(scopedRows), [scopedRows]);
   const categories = useMemo(() => buildCategories(scopedRows), [scopedRows]);
@@ -411,9 +441,9 @@ export default function App() {
   function exportCsv() {
     downloadCsv(
       `shelfguide-terrain-actions-${dayKey(new Date().toISOString())}.csv`,
-      ['Rayon', 'Categorie', 'Magasin', 'Statut', 'Priorite', 'Action', 'Vide %', 'Back-side %', 'Profitabilite %', 'Facings vides', 'Back produits', 'Dernier audit'],
+      ['Rayon', 'Categorie', 'Magasin', 'Statut', 'Priorite', 'Probleme', 'Action', 'Vide %', 'Back-side %', 'Score terrain %', 'Facings vides', 'Back produits', 'Dernier audit'],
       actions.map((a) => [
-        a.shelf, a.category, a.store, a.status, a.priority, a.action,
+        a.shelf, a.category, a.store, a.status, a.priority, a.issue, a.action,
         Math.round(a.emptyRatio), Math.round(a.backRatio), Math.round(a.profitability),
         a.emptySpaces, a.backProducts, formatDate(a.lastAudit),
       ]),
@@ -426,7 +456,7 @@ export default function App() {
 
   function exportPdf() {
     generateChefReport({
-      perimetre: `${dashboardConfig.storeName || 'Tous magasins'}${dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}`,
+      perimetre: [dashboardConfig.storeName, dashboardConfig.category].filter(Boolean).join(' / ') || 'Rayon',
       periode: RANGE_LABELS[range],
       summary: {
         avgProfitability: summary.avgProfitability,
@@ -539,10 +569,6 @@ export default function App() {
             <p className="subtitle">Priorisez les corrections, suivez le remplissage et validez les actions terrain.</p>
           </div>
           <div className="header-actions">
-            <div className="store-chip">
-              <span>Perimetre</span>
-              <strong>{dashboardConfig.storeName || 'Tous magasins'}{dashboardConfig.category ? ` / ${dashboardConfig.category}` : ''}</strong>
-            </div>
             <label className="quick-search" aria-label="Recherche rapide">
               <span>Search</span>
               <input
@@ -555,7 +581,7 @@ export default function App() {
               <kbd>Ctrl K</kbd>
             </label>
             <div className="seg" role="group" aria-label="Periode d'analyse">
-              {(['7d', '30d', 'all'] as Range[]).map((r) => (
+              {(['today', '7d', '30d', 'all'] as Range[]).map((r) => (
                 <button key={r} className={range === r ? 'active' : ''} onClick={() => setRange(r)}>{RANGE_LABELS[r]}</button>
               ))}
             </div>
@@ -658,8 +684,21 @@ export default function App() {
               </article>
             </section>
 
+            <TerrainFilterBar
+              shelves={shelfOptions}
+              categories={categoryOptions}
+              selectedShelf={selectedShelf}
+              selectedCategory={selectedCategory}
+              selectedPriority={selectedPriority}
+              urgentOnly={urgentOnly}
+              onShelf={setSelectedShelf}
+              onCategory={setSelectedCategory}
+              onPriority={setSelectedPriority}
+              onUrgent={setUrgentOnly}
+            />
+
             <section className="metric-grid">
-              <MetricCard label="Score de remplissage du rayon" value={pct(summary.avgProfitability)} detail="Score moyen" tone="success" />
+              <MetricCard label="Score terrain moyen" value={pct(summary.avgProfitability)} detail="Conformite terrain" tone="success" />
               <MetricCard
                 label="Anomalies ouvertes"
                 value={String(openActions)}
@@ -674,15 +713,6 @@ export default function App() {
               <MetricCard label="Progression apres correction" value={String(latestTimeline?.corrected ?? 0)} detail="Anomalies corrigees" tone="success" spark={timeline.map((point) => point.corrected)} />
               <MetricCard label="Produits mal orientes" value={String(summary.backProducts)} detail={`${pct(summary.avgBackRatio)} back-side moyen`} />
             </section>
-
-            <BusinessBand
-              ruptureCostDaily={ruptureCostDaily}
-              recovered={recovered}
-              hoursSaved={hoursSaved}
-              boost={boost}
-              onBoost={setBoost}
-              location={dashboardConfig.networkLabel}
-            />
 
             <section className="content-grid">
               <section className="panel table-panel" id="actions">
@@ -921,6 +951,62 @@ function MetricCard({
   );
 }
 
+function TerrainFilterBar({
+  shelves,
+  categories,
+  selectedShelf,
+  selectedCategory,
+  selectedPriority,
+  urgentOnly,
+  onShelf,
+  onCategory,
+  onPriority,
+  onUrgent,
+}: {
+  shelves: string[];
+  categories: string[];
+  selectedShelf: string;
+  selectedCategory: string;
+  selectedPriority: 'all' | Priority;
+  urgentOnly: boolean;
+  onShelf: (value: string) => void;
+  onCategory: (value: string) => void;
+  onPriority: (value: 'all' | Priority) => void;
+  onUrgent: (value: boolean) => void;
+}) {
+  return (
+    <section className="filter-bar" aria-label="Filtres terrain">
+      <label>
+        <span>Rayon</span>
+        <select value={selectedShelf} onChange={(event) => onShelf(event.target.value)}>
+          <option value="all">Tous les rayons</option>
+          {shelves.map((shelf) => <option key={shelf} value={shelf}>{shelf}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Categorie</span>
+        <select value={selectedCategory} onChange={(event) => onCategory(event.target.value)}>
+          <option value="all">Toutes categories</option>
+          {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Priorite</span>
+        <select value={selectedPriority} onChange={(event) => onPriority(event.target.value as 'all' | Priority)}>
+          <option value="all">Toutes priorites</option>
+          <option value="Haute">Haute</option>
+          <option value="Moyenne">Moyenne</option>
+          <option value="Faible">Faible</option>
+        </select>
+      </label>
+      <label className="check-filter">
+        <input type="checkbox" checked={urgentOnly} onChange={(event) => onUrgent(event.target.checked)} />
+        <span>Actions urgentes</span>
+      </label>
+    </section>
+  );
+}
+
 function PanelTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
     <div className="panel-title">
@@ -948,11 +1034,11 @@ function ActionTable({ actions, emptyTh, backTh }: { actions: ActionRow[]; empty
         <thead>
           <tr>
             <th>Rayon</th>
-            <th>Statut</th>
+            <th>Probleme</th>
             <th>Vide</th>
             <th>Back-side</th>
-            <th>Profitabilite</th>
-            <th>Action</th>
+            <th>Recommandation</th>
+            <th>Statut</th>
             <th>Priorite</th>
           </tr>
         </thead>
@@ -963,11 +1049,11 @@ function ActionTable({ actions, emptyTh, backTh }: { actions: ActionRow[]; empty
                 <strong>{action.shelf}</strong>
                 <small>{action.category} - {action.store}</small>
               </td>
-              <td><StatusBadge tone={toneFromStatus(action.status)} label={action.status} /></td>
+              <td><strong>{action.issue}</strong></td>
               <td><RatioCell value={action.emptyRatio} tone={action.emptyRatio >= emptyTh ? 'danger' : action.emptyRatio >= emptyTh * 0.7 ? 'warning' : 'success'} /></td>
               <td><RatioCell value={action.backRatio} tone={action.backRatio >= backTh ? 'warning' : 'success'} /></td>
-              <td><RatioCell value={action.profitability} tone={action.profitability >= 85 ? 'success' : action.profitability >= 65 ? 'warning' : 'danger'} /></td>
-              <td>{action.action}</td>
+              <td>{action.recommendation}</td>
+              <td><StatusBadge tone={toneFromStatus(action.status)} label={action.status} /></td>
               <td><StatusBadge tone={toneFromPriority(action.priority)} label={action.priority} /></td>
             </tr>
           ))}
@@ -1076,7 +1162,7 @@ function AuditCardList({ rows }: { rows: AnalysisRow[] }) {
               <small>{formatDate(row.audit_date)} - {row.category}</small>
             </div>
             <div className="audit-card-footer">
-              <span>{pct(row.weighted_profitability_percent)}</span>
+              <span>{pct(getComplianceScore(row))}</span>
               <StatusBadge tone={toneFromStatus(status)} label={status} />
             </div>
           </article>
