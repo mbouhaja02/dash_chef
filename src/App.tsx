@@ -4,6 +4,8 @@ import {
   AnalysisRow,
   average,
   formatDate,
+  formatHours,
+  formatMAD,
   isSupabaseConfigured,
   loadAnalyses,
   summarize,
